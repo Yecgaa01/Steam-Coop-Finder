@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+TAG_LABELS_PT = {
+    "Any": "Qualquer",
+    "Action": "Ação",
+    "Action RPG": "RPG de ação",
+    "Adventure": "Aventura",
+    "Arcade": "Arcade",
+    "Automation": "Automação",
+    "Base Building": "Construção de base",
+    "Bullet Hell": "Bullet hell",
+    "Card Battler": "Batalha de cartas",
+    "Casual": "Casual",
+    "City Builder": "Construção de cidade",
+    "Colony Sim": "Simulação de colônia",
+    "Combat Racing": "Corrida de combate",
+    "Crafting": "Criação/Crafting",
+    "CRPG": "CRPG",
+    "Deckbuilding": "Construção de deck",
+    "Driving": "Direção",
+    "Dungeon Crawler": "Dungeon crawler",
+    "Extraction Shooter": "Extraction shooter",
+    "Farming Sim": "Simulação de fazenda",
+    "FPS": "FPS",
+    "Grand Strategy": "Grande estratégia",
+    "Hack and Slash": "Hack and slash",
+    "Hero Shooter": "Hero shooter",
+    "Horror": "Terror",
+    "Indie": "Indie",
+    "JRPG": "JRPG",
+    "Life Sim": "Simulação de vida",
+    "Loot": "Loot",
+    "Looter Shooter": "Looter shooter",
+    "Management": "Gerenciamento",
+    "Metroidvania": "Metroidvania",
+    "MMORPG": "MMORPG",
+    "MOBA": "MOBA",
+    "Open World": "Mundo aberto",
+    "Open World Survival Craft": "Sobrevivência/craft em mundo aberto",
+    "Party Game": "Jogo para grupo / Party game",
+    "3D Platformer": "Plataforma 3D",
+    "Platformer": "Plataforma",
+    "Precision Platformer": "Plataforma de precisão",
+    "Puzzle": "Quebra-cabeça",
+    "Puzzle Platformer": "Plataforma com puzzle",
+    "PvE": "PvE",
+    "PvP": "PvP",
+    "Racing": "Corrida",
+    "Rogue-like": "Rogue-like",
+    "Rogue-lite": "Rogue-lite",
+    "RPG": "RPG",
+    "RTS": "RTS",
+    "Sandbox": "Sandbox",
+    "Simulation": "Simulação",
+    "Souls-like": "Souls-like",
+    "Sports": "Esportes",
+    "Strategy": "Estratégia",
+    "Survival": "Sobrevivência",
+    "Survival Horror": "Terror de sobrevivência",
+    "Tactical RPG": "RPG tático",
+    "Top-Down Shooter": "Tiro com visão superior",
+    "Turn-Based Strategy": "Estratégia por turnos",
+    "Turn-Based Tactics": "Tática por turnos",
+    "Twin Stick Shooter": "Tiro twin-stick",
+}
+
+
+def tag_label(tag: str, language: str) -> str:
+    if language == "pt":
+        return TAG_LABELS_PT.get(tag, tag)
+    return tag
+
+
+def tag_choices(tags: list[str], language: str) -> list[tuple[str, str]]:
+    return sorted(((tag_label(tag, language), tag) for tag in tags), key=lambda item: item[0].casefold())
