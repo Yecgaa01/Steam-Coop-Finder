@@ -15,6 +15,7 @@ TAG_LABELS_PT = {
     "Colony Sim": "Simulação de colônia",
     "Combat Racing": "Corrida de combate",
     "Crafting": "Criação/Crafting",
+    "Crossplay": "Multiplataforma",
     "CRPG": "CRPG",
     "Deckbuilding": "Construção de deck",
     "Driving": "Direção",

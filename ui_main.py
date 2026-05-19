@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from app_config import AppConfig
 from catalog import SteamApp
+from steam_curator_crossplay import SteamCuratorCrossplayClient
 from database import GameDatabase
 from exporters import export_games_csv, export_games_json
 from filters import GameFilters, filter_games
@@ -125,7 +126,7 @@ class MainWindow(QMainWindow):
         self.language_checks: dict[str, QCheckBox] = {}
         self.selected_genres: list[str] = []
         self.mass_thread: QThread | None = None
-        self.mass_worker: MassImportWorker | None = None
+        self.log_messages: list[str] = []
         self.current_page = 0
         self.page_size = config.page_size
         self.filtered_games: list[Game] = []
@@ -171,6 +172,8 @@ class MainWindow(QMainWindow):
         pause_button.clicked.connect(self.toggle_mass_import_pause)
         mass_button = QPushButton(self.tr("mass_import"))
         mass_button.clicked.connect(self.mass_import)
+        log_button = QPushButton("Log")
+        log_button.clicked.connect(self.show_log)
         update_all = QPushButton(self.tr("update"))
         update_all.clicked.connect(self.update_all_games)
         top_row.addWidget(self.search_input, 1)
@@ -178,6 +181,7 @@ class MainWindow(QMainWindow):
         top_row.addWidget(discover_button)
         top_row.addWidget(mass_button)
         top_row.addWidget(pause_button)
+        top_row.addWidget(log_button)
         top_row.addWidget(update_all)
         root_layout.addLayout(top_row)
 
@@ -418,6 +422,14 @@ class MainWindow(QMainWindow):
             Popen([executable, *argv])
             QApplication.quit()
 
+    def add_log(self, message: str) -> None:
+        self.log_messages.append(message)
+        self.status_label.setText(message)
+
+    def show_log(self) -> None:
+        text = "\n".join(self.log_messages[-200:]) or "Log vazio."
+        QMessageBox.information(self, "Log", text)
+
     def change_page_size(self, value: str) -> None:
         self.page_size = int(value)
         self.config.page_size = self.page_size
@@ -443,8 +455,20 @@ class MainWindow(QMainWindow):
             self.steam_language(),
             self,
         )
-        if dialog.exec() == QDialog.Accepted and dialog.selected_app is not None:
-            self.fetch_and_save(dialog.selected_app.appid)
+        if dialog.exec() == QDialog.Accepted and dialog.selected_apps:
+            imported = 0
+            for index, app in enumerate(dialog.selected_apps, start=1):
+                self.status_label.setText(f"Importando {index}/{len(dialog.selected_apps)}: {app.name}")
+                QApplication.processEvents()
+                try:
+                    game = self.steam.fetch_app(app.appid, self.country_code(), self.steam_language())
+                    self.db.upsert_game(game)
+                    self.db.update_game_price(game, self.country_code())
+                    imported += 1
+                except Exception as exc:
+                    self.add_log(f"Erro ao importar {app.name}: {exc}")
+            self.reload_games()
+            QMessageBox.information(self, "Importação concluída", f"{imported} jogos foram importados.")
 
     def discover_games(self) -> None:
         dialog = DiscoveryDialog(
@@ -466,7 +490,7 @@ class MainWindow(QMainWindow):
                     self.db.update_game_price(game, self.country_code())
                     imported += 1
                 except Exception as exc:
-                    QMessageBox.warning(self, "Erro", f"Não foi possível importar {app.name}:\n{exc}")
+                    self.add_log(f"Erro ao importar {app.name}: {exc}")
             self.reload_games()
             QMessageBox.information(self, "Importação concluída", f"{imported} jogos foram importados.")
 
@@ -748,13 +772,21 @@ class MassImportWorker(QObject):
         try:
             while scanned < self.limit and not self._stop_requested:
                 count = min(self.page_size, self.limit - scanned)
-                candidates = steam.discover_coop_games(
-                    coop_category=self.coop_category,
-                    start=scanned,
-                    count=count,
-                    sort_by=self.sort_by,
-                    genre_tag=self.genre_tag,
-                )
+                if self.genre_tag == "Any":
+                    candidates = steam.discover_popular_genre_games(
+                        coop_category=self.coop_category,
+                        start=scanned,
+                        count=count,
+                        sort_by=self.sort_by,
+                    )
+                else:
+                    candidates = steam.discover_coop_games(
+                        coop_category=self.coop_category,
+                        start=scanned,
+                        count=count,
+                        sort_by=self.sort_by,
+                        genre_tag=self.genre_tag,
+                    )
                 if not candidates:
                     break
 
@@ -933,6 +965,7 @@ class GameDetailsDialog(QDialog):
             t(self.language, "categories"),
             t(self.language, "full_price"),
             t(self.language, "current_price"),
+            "Crossplay",
         ]):
             label = QLabel(key)
             label.setObjectName("Subtitle")
@@ -1001,7 +1034,7 @@ class GameDetailsDialog(QDialog):
         final_price = price_data.get("final_formatted") or ("Free" if details.get("is_free") else "Unavailable")
         currency = price_data.get("currency") or self.game.currency or ""
 
-        review_text = reviews.get("review_score_desc") or "N/A"
+        review_text = translate_review_score(self.language, reviews.get("review_score_desc") or "N/A")
         total_reviews = reviews.get("total_reviews", 0)
         total_positive = reviews.get("total_positive", 0)
         total_negative = reviews.get("total_negative", 0)
@@ -1018,7 +1051,25 @@ class GameDetailsDialog(QDialog):
         self.value_labels[t(self.language, "categories")].setText(categories)
         self.value_labels[t(self.language, "full_price")].setText(f"{currency} {full_price}".strip())
         self.value_labels[t(self.language, "current_price")].setText(final_price)
+        self.load_crossplay()
         self.load_image(header_image)
+
+    def load_crossplay(self) -> None:
+        try:
+            data = SteamCuratorCrossplayClient().lookup_appid(self.game.appid, self.game.name)
+            if data["status"] == "Yes":
+                platforms = ", ".join(data["platforms"]) if data["platforms"] else t(self.language, "crossplay_unknown")
+                text = f"{t(self.language, 'crossplay_yes')} · {t(self.language, 'platforms')}: {platforms}"
+            elif data["status"] == "No":
+                text = t(self.language, "crossplay_no")
+            else:
+                text = t(self.language, "crossplay_unknown")
+            note = f"\nNote: {data['note']}" if data.get("note") and data.get("source") != "Manual override" else ""
+            self.value_labels["Crossplay"].setText(
+                f"{text}{note}"
+            )
+        except Exception:
+            self.value_labels["Crossplay"].setText(t(self.language, "crossplay_unknown"))
 
     def load_image(self, url: str) -> None:
         if not url:
@@ -1208,13 +1259,22 @@ class DiscoveryDialog(QDialog):
     def load_next_page(self) -> None:
         try:
             count = int(self.count_combo.currentText())
-            apps = self.steam.discover_coop_games(
-                coop_category=self.category_combo.currentText(),
-                start=self.start,
-                count=count,
-                sort_by=self.sort_values[self.sort_combo.currentText()],
-                genre_tag=self.genre_combo.currentText(),
-            )
+            genre_tag = self.genre_combo.currentData() or self.genre_combo.currentText()
+            if genre_tag == "Any":
+                apps = self.steam.discover_popular_genre_games(
+                    coop_category=self.category_combo.currentText(),
+                    start=self.start,
+                    count=count,
+                    sort_by=self.sort_values[self.sort_combo.currentText()],
+                )
+            else:
+                apps = self.steam.discover_coop_games(
+                    coop_category=self.category_combo.currentText(),
+                    start=self.start,
+                    count=count,
+                    sort_by=self.sort_values[self.sort_combo.currentText()],
+                    genre_tag=genre_tag,
+                )
         except Exception as exc:
             QMessageBox.critical(self, "Erro", f"Não foi possível descobrir jogos:\n{exc}")
             return
@@ -1222,6 +1282,10 @@ class DiscoveryDialog(QDialog):
         self.results.extend([app for app in apps if app.appid not in existing_ids])
         self.start += count
         self.populate_results()
+
+    @property
+    def genre_tag(self) -> str:
+        return self.genre_combo.currentData() or self.genre_combo.currentText()
 
     def populate_results(self) -> None:
         self.results_table.setRowCount(len(self.results))
@@ -1290,7 +1354,7 @@ class GameSearchDialog(QDialog):
         self.country_code = country_code
         self.imported_appids = imported_appids
         self.steam_language = steam_language
-        self.selected_app: SteamApp | None = None
+        self.selected_apps: list[SteamApp] = []
         self.results: list[SteamApp] = []
 
         self.setWindowTitle("Buscar jogo na Steam")
@@ -1314,19 +1378,30 @@ class GameSearchDialog(QDialog):
         search_row.addWidget(search_button)
         layout.addLayout(search_row)
 
-        self.results_table = QTableWidget(0, 2)
-        self.results_table.setHorizontalHeaderLabels(["AppID", "Nome"])
+        self.results_table = QTableWidget(0, 3)
+        self.results_table.setHorizontalHeaderLabels(["Importar", "AppID", "Nome"])
         self.results_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.results_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.results_table.doubleClicked.connect(self.accept_selected)
+        self.results_table.doubleClicked.connect(self.open_selected_details)
         self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         layout.addWidget(self.results_table, 1)
+
+        selection_row = QHBoxLayout()
+        select_all_button = QPushButton("Marcar todos")
+        select_all_button.clicked.connect(self.check_all)
+        unselect_all_button = QPushButton("Desmarcar todos")
+        unselect_all_button.clicked.connect(self.uncheck_all)
+        selection_row.addStretch()
+        selection_row.addWidget(select_all_button)
+        selection_row.addWidget(unselect_all_button)
+        layout.addLayout(selection_row)
 
         button_row = QHBoxLayout()
         cancel_button = QPushButton("Cancelar")
         cancel_button.clicked.connect(self.reject)
-        add_button = QPushButton("Adicionar selecionado")
+        add_button = QPushButton("Adicionar marcados")
         add_button.clicked.connect(self.accept_selected)
         button_row.addStretch()
         button_row.addWidget(cancel_button)
@@ -1355,18 +1430,64 @@ class GameSearchDialog(QDialog):
             return
         self.results_table.setRowCount(len(self.results))
         for row, app in enumerate(self.results):
+            check_item = QTableWidgetItem()
+            check_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            check_item.setCheckState(Qt.Unchecked)
+            self.results_table.setItem(row, 0, check_item)
             appid_item = QTableWidgetItem(str(app.appid))
             appid_item.setTextAlignment(Qt.AlignCenter)
-            self.results_table.setItem(row, 0, appid_item)
-            self.results_table.setItem(row, 1, QTableWidgetItem(app.name))
+            self.results_table.setItem(row, 1, appid_item)
+            self.results_table.setItem(row, 2, QTableWidgetItem(app.name))
 
-    def accept_selected(self) -> None:
+    def open_selected_details(self) -> None:
         row = self.results_table.currentRow()
         if row < 0 or row >= len(self.results):
-            QMessageBox.information(self, "Nada selecionado", "Selecione um jogo da lista.")
             return
-        self.selected_app = self.results[row]
+        app = self.results[row]
+        game = Game(appid=app.appid, name=app.name, store_link=f"https://store.steampowered.com/app/{app.appid}/")
+        dialog = GameDetailsDialog(
+            game,
+            self.steam,
+            self.country_code,
+            self.steam_language,
+            getattr(self.parent(), "lang", "pt"),
+            self,
+        )
+        dialog.exec()
+
+    def check_all(self) -> None:
+        for row in range(self.results_table.rowCount()):
+            item = self.results_table.item(row, 0)
+            if item:
+                item.setCheckState(Qt.Checked)
+
+    def uncheck_all(self) -> None:
+        for row in range(self.results_table.rowCount()):
+            item = self.results_table.item(row, 0)
+            if item:
+                item.setCheckState(Qt.Unchecked)
+
+    def accept_selected(self) -> None:
+        selected: list[SteamApp] = []
+        for row, app in enumerate(self.results):
+            item = self.results_table.item(row, 0)
+            if item and item.checkState() == Qt.Checked:
+                selected.append(app)
+        if not selected:
+            row = self.results_table.currentRow()
+            if row >= 0 and row < len(self.results):
+                selected.append(self.results[row])
+        if not selected:
+            QMessageBox.information(self, "Nada selecionado", "Marque ou selecione um jogo da lista.")
+            return
+        self.selected_apps = selected
         self.accept()
+
+
+def translate_review_score(language: str, value: str) -> str:
+    key = "review_" + value.casefold().replace(" ", "_").replace("-", "_")
+    translated = t(language, key)
+    return value if translated == key else translated
 
 
 def yes_no(value: bool) -> str:

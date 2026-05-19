@@ -20,6 +20,11 @@ COOP_CATEGORIES = {
     "Local Co-op": "24",
     "Shared/Split Screen Co-op": "39",
     "LAN Co-op": "48",
+    "Crossplay": "27",
+}
+
+INTERNAL_TAGS = {
+    "Crossplay",
 }
 
 GENRE_TAGS = {
@@ -86,6 +91,28 @@ GENRE_TAGS = {
     "Combat Racing": "4102",
     "Loot": "4236",
 }
+POPULAR_DISCOVERY_TAGS = [
+    "Action",
+    "Adventure",
+    "RPG",
+    "Indie",
+    "Casual",
+    "Simulation",
+    "Strategy",
+    "Survival",
+    "Open World",
+    "Rogue-like",
+    "Rogue-lite",
+    "Souls-like",
+    "Metroidvania",
+    "Horror",
+    "FPS",
+    "Puzzle",
+    "Platformer",
+    "Sandbox",
+    "Party Game",
+    "Crossplay",
+]
 
 
 class SteamApiError(Exception):
@@ -189,6 +216,33 @@ class SteamClient:
             result.append(SteamApp(appid=appid, name=name))
         return result
 
+    def discover_popular_genre_games(
+        self,
+        coop_category: str = "Online Co-op",
+        start: int = 0,
+        count: int = 25,
+        sort_by: str = "Reviews_DESC",
+    ) -> list[SteamApp]:
+        result: list[SteamApp] = []
+        seen: set[int] = set()
+        per_tag = max(1, min(25, count // max(1, len(POPULAR_DISCOVERY_TAGS)) + 1))
+        offset = start // max(1, len(POPULAR_DISCOVERY_TAGS))
+        for tag in POPULAR_DISCOVERY_TAGS:
+            for app in self.discover_coop_games(
+                coop_category=coop_category,
+                start=offset,
+                count=per_tag,
+                sort_by=sort_by,
+                genre_tag=tag,
+            ):
+                if app.appid in seen:
+                    continue
+                seen.add(app.appid)
+                result.append(app)
+                if len(result) >= count:
+                    return result
+        return result
+
     def discover_coop_games(
         self,
         coop_category: str = "Online Co-op",
@@ -241,6 +295,10 @@ def parse_steam_game(appid: int, data: dict) -> Game:
     category_text = " | ".join(categories).lower()
     price = extract_price(data)
 
+    tags = []
+    if any(str(item.get("id")) == "27" or str(item.get("description", "")).casefold() == "cross-platform multiplayer" for item in data.get("categories", [])):
+        tags.append("Crossplay")
+
     return Game(
         appid=appid,
         name=data.get("name", ""),
@@ -249,6 +307,7 @@ def parse_steam_game(appid: int, data: dict) -> Game:
         split_screen=("shared/split screen" in category_text or "split screen" in category_text),
         lan_coop=("lan co-op" in category_text),
         genres=[g.get("description", "") for g in data.get("genres", []) if g.get("description")],
+        tags=tags,
         languages=parse_languages(data.get("supported_languages", "")),
         price=price["formatted"],
         currency=price["currency"],
